@@ -1,0 +1,163 @@
+LockServer 0.9b - 7/14/2000
+---------------------------
+
+This document is intended to overview both the network protocol used by 
+LockServer and some basic technical information on how it operates.
+
+The initial connection to the LockServer goes through a minor amount of 
+authentication.  When the connect occurs, the server checks for the existence
+of the remote ip in the "hosts" file which (by default) lives in
+/usr/local/lockserver.  The server is polite enough to send a single byte 0
+if the connection is not allowed and a 1 if it is.
+
+Next, the lockserver expects a command followed by arguments for the command.
+The commands are as follows (1 byte each):
+
+Find lock owner:          0x1
+Request a lock:           0x2
+Find contention location: 0x3
+Renew a lock:             0x4
+Release specific lock:    0x5
+Release all owned locks:  0x6
+List lock contenders:     0x7
+Retrieve Stats:           0x8
+
+A lock is made up of the following integral parts:
+
+TTW (Time To Wait) - How long a contending lock should exist without renewal,
+while waiting for ownership.
+
+TTL (Time To Live) - How long the lock should exist without renewal, once 
+lock ownership has been obtained.
+
+key - For us, this equates to "which table in the database" are we locking.  
+It is a string with a max length of 256 characters.
+
+index - Equates to "which row ID" are we locking.  Also a string with a max
+of 256 characters.
+
+owner - A string listing who the owner/contender is.  Max 256 character string.
+
+priority - The priority value helps determine when the contender becomes an
+owner.  The server will first look at priority, and then queue time.  1 byte.
+
+
+Commands:
+
+* In all cases, when sending strings or calculating lengths, do not null 
+  terminate.
+* All integers > 1 byte should be sent MSB first.
+
+Find lock owner
+---------------
+1) Send 1 byte length of key followed by the key. 
+2) Send 1 byte length of index followed by the index.
+3) Read 1 byte length of owner followed by the owner.
+
+Request a lock
+--------------
+1) Send 1 byte length of key followed by the key. 
+2) Send 1 byte length of index followed by the index.
+3) Send 1 byte length of owner followed by the owner.
+4) Send 2 byte TTL.
+5) Send 2 byte TTW.
+6) Send 1 byte priority.
+7) Read 2 byte contender location.
+
+Three comments about the above command.  First of all, a result of 1 indicates
+that you own the lock, 2 means you are first in line, etc.  Secondly, a 
+result of 0 is a special case.  This means that the lock request was rejected
+because the server is currently in graceful shutdown mode.  More on this 
+later.  Finally, requesting a lock that already exists (same key, index, and
+owner) will simply renew the lock.
+
+Find contender location
+-----------------------
+1) Send 1 byte length of key followed by the key.
+2) Send 1 byte length of index followed by the index.
+3) Send 1 byte length of owner followed by the owner.
+4) Read 2 byte contender location.
+
+Renew a lock
+------------
+1) Send 1 byte length of key followed by the key.
+2) Send 1 byte length of index followed by the index.
+3) Send 1 byte length of owner followed by the owner.
+4) Read 1 byte success/failure.
+
+Release a specific lock
+-----------------------
+1) Send 1 byte length of key followed by the key.
+2) Send 1 byte length of index followed by the index.
+3) Send 1 byte length of owner followed by the owner.
+4) Read 2 bytes # of locks removed.
+
+With the specific lock release, sending an index of "*" will release all
+lock contention for that key/owner pair.
+
+Release all owned locks
+-----------------------
+1) Send 1 byte length of owner followed by the owner.
+2) Read 2 bytes # of locks removed.
+
+List all lock contenders
+------------------------
+1) Send 1 byte length of key followed by the key.
+2) Read 2 byte # of contenders.
+3) Loop reading following info for each contender.
+   A) 1 byte priority.
+   B) 2 byte TTL.
+   C) 2 byte TTW.
+   D) 1 byte size of index followed by the index.
+   E) 1 byte size of owner followed by the owner.
+   F) 1 byte - 0: not owner, !0: owner.
+
+This function was mostly added as a debugging tool.
+
+Retrieve Stats
+--------------
+1) Read 4 byte uptime (in seconds).
+2) Read 4 byte # of lock requests.
+3) Read 4 byte # of owner lookups.
+4) Read 4 byte # of contender lookups.
+5) Read 4 byte # of lock renewal requests.
+6) Read 4 byte # of specific lock releases.
+7) Read 4 byte # of general lock releases.
+8) Read 4 byte # of lock dump requests.
+9) Read 4 byte # of statistics requests.
+10) Read (long) # of accepted connections.
+11) Read (long) # of rejected (not in hosts file) connections.
+12) Read (long) # of rejected (too busy) connections.
+13) Read (long) # of current lock owners.
+14) Read (long) # of current lock (non owner) contenders.
+15) Read 2 byte # of currently active connections.
+
+
+Signals
+-------
+The following signals call the "noble_death" function which will save all
+the locks to a file (for reloading on restart), close all connections,
+and (theoretically) exit cleanly.
+SIGINT
+SIGSTP
+SIGSTOP
+
+SIGSEGV (seg fault) Will attempt to do the same thing and dump core.
+SIGHUP will reload config info (mostly just the host info for now).
+SIGUSR1 will dump stats to the stat file and save the current lock list.
+
+SIGSYS - Ok, yeah, I know, weird choice for a signal.  It will probably 
+change.  What this does is put the server into a mode where it will still
+accept connections, but no new locks are allowed.  Once all locks (both
+owners and contenders) are cleaned out, it will call noble_death.
+
+Arguments
+---------
+There is currently only one potential argument to LockServer: -d
+This will turn on debug mode which is intended as an aid for client 
+developers.  It will print out some (rather amusing at least) informational
+messages during runtime to stderr.
+
+Questions/comments/rants/money can be sent to me at cole@tuininga.org.
+
+
